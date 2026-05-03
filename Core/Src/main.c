@@ -1,3 +1,19 @@
+/*
+ * @Author: Master ou 2630483757@qq.com
+ * @Date: 2026-04-28 08:53:05
+ * @LastEditors: Master ou 2630483757@qq.com
+ * @LastEditTime: 2026-05-03 10:50:03
+ * @FilePath: \Kalman_mpu6050\Core\Src\main.c
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
+/*
+ * @Author: Master ou 2630483757@qq.com
+ * @Date: 2026-04-28 08:53:05
+ * @LastEditors: Master ou 2630483757@qq.com
+ * @LastEditTime: 2026-05-02 16:20:03
+ * @FilePath: \Kalman_mpu6050\Core\Src\main.c
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
@@ -24,7 +40,8 @@
 #include "mpu6050.h"
 #include <stdint.h>
 #include <stdio.h>
-
+#include "qmc5883p.h"
+#include "math.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -50,6 +67,20 @@
 /* USER CODE BEGIN PV */
 Mpu6050_t Mpu6050;
 Kalman_t Kalman;
+QMC5883P_Data_t QMC5883P_Data;
+float heading;
+// 定义偏差值
+#define QMC5883P_OFFSET_X -134
+#define QMC5883P_OFFSET_Y 347
+#define QMC5883P_OFFSET_Z -118.5
+float calibrated_x = 0;
+float calibrated_y = 0;
+float calibrated_z = 0;
+float filter_yaw_sin = 0;
+float filter_yaw_cos = 1;
+float sin_h=0;
+float cos_h=1;
+float yaw=0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -60,7 +91,10 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+float low_pass_filter(float *input, float *last, float alpha)
+{
+   return alpha * *input + (1 - alpha) * *last;
+}
 /* USER CODE END 0 */
 
 /**
@@ -93,19 +127,64 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
+  MX_I2C2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   while(MPU6050_Init(&hi2c1) == 1); 
   Kalman_Init();
   MPU6050_Calibrate_Gyro_offset();
+
+  /* 强制识别QMC5883P地址 */
+  // printf("Start I2C Scan...\r\n");
+  // printf("Start I2C Scan...\r\n");
+  // for(uint8_t i = 1; i < 128; i++) {
+  //     // 强制发送不同地址探活
+  //     if(HAL_I2C_IsDeviceReady(&hi2c2, (uint16_t)(i << 1), 3, 100) == HAL_OK) {
+  //         printf(">>> Found I2C Device! 7-bit Addr: 0x%02X, 8-bit Addr: 0x%02X\r\n", i, i << 1);
+  //     }
+  // }
+  // printf("I2C Scan Complete.\r\n");
+
+  QMC5883P_Init(&hi2c2);
+  // 在main.c中添加
+  // printf("Testing I2C2...\r\n");
+  // uint8_t test = 0;
+  // if(HAL_I2C_Master_Transmit(&hi2c2, 0x2c<<1, &test, 0, 100) == HAL_OK) {
+  //     printf("I2C2 OK\r\n");
+  // } else {
+  //     printf("I2C2 Error\r\n");
+  // }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    /* 读取 MPU6050，更新 dt 和陀螺仪数据 */
     MPU6050_Read_All();
-    Kalman_Update();
+    if(QMC5883P_Ready(&hi2c2))
+    {
+      if(QMC5883P_ReadData(&hi2c2, &QMC5883P_Data) == 0)
+      {
+     
+        // printf("%d,%d,%d\r\n", QMC5883P_Data.x, QMC5883P_Data.y, QMC5883P_Data.z);
+        calibrated_x = QMC5883P_Data.x - QMC5883P_OFFSET_X;
+        calibrated_y = QMC5883P_Data.y - QMC5883P_OFFSET_Y;
+        heading = atan2f(-calibrated_x, -calibrated_y);
+        /*通过sin/cos滤波减少误差*/
+        sin_h = sinf(heading);
+        cos_h = cosf(heading);
+        filter_yaw_sin = low_pass_filter(&sin_h, &filter_yaw_sin, 0.2f);
+        filter_yaw_cos = low_pass_filter(&cos_h, &filter_yaw_cos, 0.2f);
+        yaw = atan2f(filter_yaw_sin, filter_yaw_cos);
+        yaw = yaw * 180.0f / M_PI;
+        /*将角度转换为0-360度，归一化*/
+        if(yaw<0) yaw += 360.0f;
+        else if (yaw>=360) yaw-=360.0f;
+        
+        printf("Heading: %d\r\n", (int16_t)yaw);
+      }
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

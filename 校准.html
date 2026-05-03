@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QMC5883L 3D视觉引导校准助手</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/10.6.4/math.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; background-color: #020617; color: #f8fafc; font-family: system-ui; overflow: hidden; }
+        #canvas-container { width: 100%; height: 70vh; background: radial-gradient(circle at center, #1e293b 0%, #020617 100%); }
+        .status-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+    </style>
+</head>
+<body>
+
+<div class="flex flex-col h-screen">
+    <!-- 顶部状态 -->
+    <div class="bg-slate-950 border-b border-slate-800 p-4 flex justify-between items-center">
+        <div class="flex items-center gap-4">
+            <div class="p-2 bg-blue-600 rounded-lg">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A2 2 0 013 15.487V6.513a2 2 0 011.553-1.789L9 2l5.447 2.724A2 2 0 0116 6.513v8.974a2 2 0 01-1.553 1.789L9 20z" />
+                </svg>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold">磁力计 3D 视觉引导校准 V3.1</h1>
+                <p class="text-xs text-slate-500">
+                    状态: <span id="conn-status" class="text-amber-500">未连接</span> 
+                    <span id="data-indicator" class="hidden ml-2 text-emerald-500 status-pulse">● 数据流入中</span>
+                </p>
+            </div>
+        </div>
+        <div class="flex gap-3">
+            <button id="connect-btn" class="bg-indigo-600 hover:bg-indigo-500 px-6 py-2 rounded-lg font-bold transition shadow-lg shadow-indigo-500/20">连接串口</button>
+            <button onclick="toggleMockMode()" class="bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded-lg text-xs transition border border-slate-700">演示模式</button>
+            <button onclick="runCalibration()" id="calc-btn" class="bg-emerald-600 hover:bg-emerald-500 px-6 py-2 rounded-lg font-bold transition opacity-50 cursor-not-allowed" disabled>计算校准矩阵</button>
+        </div>
+    </div>
+
+    <div class="flex flex-1 overflow-hidden">
+        <!-- 3D 引导视图 -->
+        <div class="flex-1 relative">
+            <div id="canvas-container"></div>
+            
+            <!-- 进度面板 -->
+            <div class="absolute top-6 right-6 w-56 bg-slate-900/80 backdrop-blur p-4 rounded-xl border border-slate-700 shadow-2xl">
+                <div class="flex justify-between text-xs mb-1 text-slate-300">
+                    <span>空间采集覆盖度</span>
+                    <span id="coverage-percent" class="font-bold">0%</span>
+                </div>
+                <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-4">
+                    <div id="coverage-bar" class="bg-blue-500 h-full transition-all duration-500" style="width: 0%"></div>
+                </div>
+                <div class="flex justify-between text-[10px] text-slate-500 mb-2">
+                    <span>已采点数: <span id="count" class="text-blue-400">0</span></span>
+                </div>
+                <div class="grid grid-cols-3 gap-2 text-[10px] text-center">
+                    <div id="dir-x" class="p-1 rounded bg-slate-800 border border-transparent transition-colors">X轴</div>
+                    <div id="dir-y" class="p-1 rounded bg-slate-800 border border-transparent transition-colors">Y轴</div>
+                    <div id="dir-z" class="p-1 rounded bg-slate-800 border border-transparent transition-colors">Z轴</div>
+                </div>
+            </div>
+
+            <!-- 操作引导 -->
+            <div class="absolute bottom-6 left-6 max-w-sm bg-slate-900/90 backdrop-blur border-l-4 border-amber-500 p-4 rounded-r-xl shadow-xl">
+                <h3 class="text-sm font-bold text-amber-500 mb-1">动作指引：</h3>
+                <p id="guide-text" class="text-slate-200 text-sm leading-relaxed">请连接串口并缓慢旋转传感器。</p>
+            </div>
+        </div>
+
+        <!-- 结果面板 -->
+        <div class="w-80 bg-slate-950 border-l border-slate-800 p-6 flex flex-col overflow-y-auto">
+            <section class="mb-8">
+                <h2 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4">实时观测</h2>
+                <div class="grid grid-cols-3 gap-2 font-mono text-center mb-4">
+                    <div class="bg-slate-900 p-2 rounded border border-slate-800"><p class="text-[9px] text-slate-500 mb-1">X</p><span id="live-x" class="text-red-400 font-bold">-</span></div>
+                    <div class="bg-slate-900 p-2 rounded border border-slate-800"><p class="text-[9px] text-slate-500 mb-1">Y</p><span id="live-y" class="text-green-400 font-bold">-</span></div>
+                    <div class="bg-slate-900 p-2 rounded border border-slate-800"><p class="text-[9px] text-slate-500 mb-1">Z</p><span id="live-z" class="text-blue-400 font-bold">-</span></div>
+                </div>
+            </section>
+
+            <section class="space-y-6">
+                <h2 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4">校准输出</h2>
+                <div class="p-4 bg-slate-900 rounded-lg border border-slate-800">
+                    <p class="text-[10px] text-slate-500 mb-2 font-bold">OFFSET (硬铁补偿)</p>
+                    <pre id="res-offset" class="text-emerald-400 text-xs font-mono">等待计算...</pre>
+                </div>
+                <div class="p-4 bg-slate-900 rounded-lg border border-slate-800">
+                    <p class="text-[10px] text-slate-500 mb-2 font-bold">SCALE MATRIX (软铁补偿)</p>
+                    <div id="res-matrix" class="grid grid-cols-3 gap-1 font-mono text-[9px] text-emerald-500"></div>
+                </div>
+                <button onclick="clearData()" class="w-full py-2 border border-slate-800 hover:bg-slate-800 rounded-lg text-xs text-slate-500 transition">清空数据</button>
+            </section>
+        </div>
+    </div>
+</div>
+
+<script>
+    let scene, camera, renderer, pointsGroup, targetBall;
+    let rawPoints = [];
+    let port, reader;
+    let sectors = new Set(); 
+    const TOTAL_SECTORS = 64; 
+    let isMocking = false;
+
+    // 动态边界追踪
+    let stats = {
+        min: [Infinity, Infinity, Infinity],
+        max: [-Infinity, -Infinity, -Infinity],
+        center: [0, 0, 0],
+        avgRadius: 500
+    };
+
+    function init3D() {
+        scene = new THREE.Scene();
+        const container = document.getElementById('canvas-container');
+        camera = new THREE.PerspectiveCamera(70, container.clientWidth / container.clientHeight, 1, 20000);
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        container.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AxesHelper(1000));
+        const grid = new THREE.GridHelper(3000, 60, 0x1e293b, 0x0f172a);
+        grid.position.y = -1000;
+        scene.add(grid);
+        
+        pointsGroup = new THREE.Group();
+        scene.add(pointsGroup);
+
+        // 引导球外观优化
+        const ballGeo = new THREE.SphereGeometry(60, 24, 24);
+        const ballMat = new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.3, wireframe: true });
+        targetBall = new THREE.Mesh(ballGeo, ballMat);
+        targetBall.visible = false;
+        scene.add(targetBall);
+
+        const innerBall = new THREE.Mesh(
+            new THREE.SphereGeometry(30, 12, 12),
+            new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.6 })
+        );
+        targetBall.add(innerBall);
+
+        camera.position.set(1500, 1000, 1500);
+        camera.lookAt(0, 0, 0);
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (targetBall.visible) {
+                const s = 1 + Math.sin(Date.now() * 0.01) * 0.2;
+                targetBall.scale.set(s, s, s);
+            }
+            // 视角跟随数据中心缓慢漂移，防止数据偏移出屏幕
+            camera.lookAt(stats.center[0], stats.center[2], stats.center[1]);
+            renderer.render(scene, camera);
+        }
+        animate();
+    }
+
+    document.getElementById('connect-btn').addEventListener('click', async () => {
+        try {
+            port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 115200 });
+            
+            document.getElementById('connect-btn').innerText = "已连接";
+            document.getElementById('conn-status').innerText = "已连接";
+            document.getElementById('conn-status').className = "text-emerald-500 font-bold";
+
+            const decoder = new TextDecoderStream();
+            port.readable.pipeTo(decoder.writable);
+            reader = decoder.readable.getReader();
+
+            let buffer = "";
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                document.getElementById('data-indicator').classList.remove('hidden');
+                buffer += value;
+                let lines = buffer.split(/\r?\n/);
+                buffer = lines.pop();
+                for (let line of lines) { if (line.trim()) parseLine(line); }
+            }
+        } catch (err) { alert("连接失败: " + err.message); }
+    });
+
+    function parseLine(line) {
+        const nums = line.split(/[,\s]+/).filter(v => v.length > 0);
+        if (nums.length >= 3) {
+            const x = parseFloat(nums[0]);
+            const y = parseFloat(nums[1]);
+            const z = parseFloat(nums[2]);
+            if (!isNaN(x) && !isNaN(y) && !isNaN(z)) addPoint(x, y, z);
+        }
+    }
+
+    function addPoint(x, y, z) {
+        document.getElementById('live-x').innerText = x.toFixed(0);
+        document.getElementById('live-y').innerText = y.toFixed(0);
+        document.getElementById('live-z').innerText = z.toFixed(0);
+
+        // 更新边界和中心统计
+        for(let i=0; i<3; i++) {
+            const val = [x,y,z][i];
+            if(val < stats.min[i]) stats.min[i] = val;
+            if(val > stats.max[i]) stats.max[i] = val;
+            stats.center[i] = (stats.min[i] + stats.max[i]) / 2;
+        }
+        
+        // 估计当前的平均半径
+        const dx = (stats.max[0] - stats.min[0])/2;
+        const dy = (stats.max[1] - stats.min[1])/2;
+        const dz = (stats.max[2] - stats.min[2])/2;
+        stats.avgRadius = Math.max(100, (dx + dy + dz) / 3);
+
+        if (rawPoints.length > 0) {
+            const last = rawPoints[rawPoints.length - 1];
+            if (Math.sqrt((x-last[0])**2 + (y-last[1])**2 + (z-last[2])**2) < stats.avgRadius * 0.05) return; 
+        }
+
+        rawPoints.push([x, y, z]);
+        document.getElementById('count').innerText = rawPoints.length;
+
+        const mesh = new THREE.Mesh(
+            new THREE.SphereGeometry(stats.avgRadius * 0.02, 8, 8),
+            new THREE.MeshBasicMaterial({ color: isMocking ? 0x6366f1 : 0xef4444 })
+        );
+        mesh.position.set(x, z, y); 
+        pointsGroup.add(mesh);
+
+        updateAnalysis(x, y, z);
+
+        if (rawPoints.length > 40) {
+            document.getElementById('calc-btn').disabled = false;
+            document.getElementById('calc-btn').classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+    }
+
+    function updateAnalysis(x, y, z) {
+        // 基于当前中心的极坐标映射
+        const relX = x - stats.center[0];
+        const relY = y - stats.center[1];
+        const relZ = z - stats.center[2];
+        
+        const theta = Math.atan2(relY, relX); 
+        const dist2d = Math.sqrt(relX*relX + relY*relY);
+        const phi = Math.atan2(dist2d, relZ); 
+        
+        const tIdx = Math.floor(((theta + Math.PI) / (2 * Math.PI)) * 8);
+        const pIdx = Math.floor((phi / Math.PI) * 8);
+        sectors.add(`${tIdx}_${pIdx}`);
+
+        const coverage = Math.min(100, Math.round((sectors.size / TOTAL_SECTORS) * 100));
+        document.getElementById('coverage-percent').innerText = coverage + "%";
+        document.getElementById('coverage-bar').style.width = coverage + "%";
+
+        // 轴向检测
+        const rangeX = stats.max[0] - stats.min[0];
+        if (rangeX > 100) {
+            if (x > stats.center[0] + rangeX*0.3 || x < stats.center[0] - rangeX*0.3) 
+                document.getElementById('dir-x').classList.add('bg-red-500/20', 'border-red-500', 'text-white');
+        }
+
+        updateGuideBall();
+    }
+
+    function updateGuideBall() {
+        if(rawPoints.length < 5) return;
+        targetBall.visible = true;
+        let targetSector = null;
+        
+        // 寻找空白区域
+        for(let p=1; p<7; p++) { // 避开极点
+            for(let t=0; t<8; t++) {
+                if(!sectors.has(`${t}_${p}`)) {
+                    targetSector = {t, p};
+                    break;
+                }
+            }
+            if(targetSector) break;
+        }
+
+        if(targetSector) {
+            const theta = (targetSector.t / 8) * 2 * Math.PI - Math.PI;
+            const phi = (targetSector.p / 8) * Math.PI;
+            
+            // 引导球位置 = 中心 + 当前半径 * 方向
+            const R = stats.avgRadius * 1.1; 
+            const tx = stats.center[0] + R * Math.sin(phi) * Math.cos(theta);
+            const ty = stats.center[1] + R * Math.sin(phi) * Math.sin(theta);
+            const tz = stats.center[2] + R * Math.cos(phi);
+            
+            targetBall.position.lerp(new THREE.Vector3(tx, tz, ty), 0.1);
+            document.getElementById('guide-text').innerText = "引导：请将传感器向蓝色光球方向转动，补全该区域数据。";
+        } else {
+            targetBall.visible = false;
+            document.getElementById('guide-text').innerText = "🎉 覆盖完成！建议点击计算结果。";
+        }
+    }
+
+    function runCalibration() {
+        if (rawPoints.length < 30) return;
+        const D = rawPoints.map(([x, y, z]) => [x*x, y*y, z*z, x*y, x*z, y*z, x, y, z]);
+        const On = math.ones([rawPoints.length, 1]);
+        try {
+            const v = math.lusolve(math.multiply(math.transpose(D), D), math.multiply(math.transpose(D), On)).map(r => r[0]);
+            const [a, b, c, d, e, f, g, h, i] = v;
+            const Ama = [[a, d/2, e/2], [d/2, b, f/2], [e/2, f/2, c]];
+            const offset = math.lusolve(Ama, math.multiply(-0.5, [g, h, i])).map(r => r[0]);
+            document.getElementById('res-offset').innerText = `X: ${offset[0].toFixed(1)}\nY: ${offset[1].toFixed(1)}\nZ: ${offset[2].toFixed(1)}`;
+            const invAma = math.inv(Ama);
+            const matrix = math.multiply(invAma, 1 / Math.pow(Math.abs(math.det(invAma)), 1/3));
+            const mDiv = document.getElementById('res-matrix');
+            mDiv.innerHTML = "";
+            matrix.flat().forEach(val => {
+                const item = document.createElement('div');
+                item.className = "bg-slate-900 p-1 rounded text-center border border-slate-800";
+                item.innerText = val.toFixed(3);
+                mDiv.appendChild(item);
+            });
+        } catch (e) { alert("计算出错，数据分布太集中。"); }
+    }
+
+    function clearData() {
+        rawPoints = []; sectors.clear();
+        stats = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity], center: [0, 0, 0], avgRadius: 500 };
+        while(pointsGroup.children.length > 0) pointsGroup.remove(pointsGroup.children[0]);
+        document.getElementById('count').innerText = "0";
+        document.getElementById('coverage-percent').innerText = "0%";
+        document.getElementById('coverage-bar').style.width = "0%";
+    }
+
+    function toggleMockMode() {
+        isMocking = !isMocking;
+        if (isMocking) {
+            let angle = 0;
+            const timer = setInterval(() => {
+                if (!isMocking) { clearInterval(timer); return; }
+                angle += 0.1;
+                addPoint(300 * Math.sin(angle) + 100, 250 * Math.cos(angle*0.7) - 50, 280 * Math.cos(angle));
+            }, 50);
+        }
+    }
+
+    window.onload = init3D;
+</script>
+</body>
+</html>

@@ -121,7 +121,7 @@ void MPU6050_Calibrate_Gyro_offset(void)
     float ax = 0.0f;
     float ay = 0.0f;
   
-    for(uint32_t i=0;i<2000;i++)
+    for(uint32_t i=0;i<1500;i++)
     {
        MPU6050_Read_Gyro(&hi2c1);
        gx += Mpu6050.Gyro_X;
